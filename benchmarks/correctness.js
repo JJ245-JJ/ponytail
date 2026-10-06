@@ -43,33 +43,27 @@ function identifyTask(task) {
   return null;
 }
 
-// Run a command, return { ok, stderr }.
+// Run a command, return { ok, stderr }. Harnesses that print FAIL to stdout
+// still get their reason through (#919).
 function exec(cmd, opts = {}) {
   try {
     execSync(cmd, { timeout: correctnessTimeoutMs(), encoding: 'utf8', stdio: 'pipe', ...opts });
     return { ok: true, stderr: '' };
   } catch (e) {
-    return { ok: false, stderr: (e.stderr || e.message || '').slice(0, 500) };
+    return { ok: false, stderr: (e.stderr || e.stdout || e.message || '').slice(0, 500) };
   }
 }
 
 // ponytail: probe once at load; macOS and many Linux images ship python3 only.
-// A bare `python3` can resolve to a minimal interpreter (uv/pyenv shim) that
-// lacks pandas while the system one has it, so prefer a pandas-capable
-// interpreter first and fall back to any working one.
-const PY_CANDIDATES = ['python3', 'python', '/usr/bin/python3'];
+// Prefer one with pandas (the csv task needs it): on Windows python3 can be a
+// bundled Python without it while python has it (#919).
 let pythonCmd;
 function python() {
   if (pythonCmd) return pythonCmd;
-  for (const probe of ['import pandas', 'import sys']) {
-    for (const cmd of PY_CANDIDATES) {
-      if (exec(`${cmd} -c "${probe}"`).ok) {
-        pythonCmd = cmd;
-        return pythonCmd;
-      }
-    }
-  }
-  pythonCmd = 'python3';
+  const candidates = ['python3', 'python', '/usr/bin/python3'];
+  pythonCmd = candidates.find((cmd) => exec(`${cmd} -c "import pandas"`).ok)
+    || candidates.find((cmd) => exec(`${cmd} -c "import sys"`).ok)
+    || 'python3';
   return pythonCmd;
 }
 
@@ -206,16 +200,15 @@ os.chdir(r"${path.dirname(csvPath)}")
 # Capture print output
 import io
 _stdout = sys.stdout
-_buf = io.StringIO()
-sys.stdout = _buf
+sys.stdout = io.StringIO()
 
 try:
 ${patched.split('\n').map((l) => '    ' + l).join('\n')}
-except Exception as e:
-    # Swallow: the output check below reports a FAIL verdict either way.
-    pass
+except Exception:
+    sys.stdout = _stdout
+    raise
 
-output = _buf.getvalue()
+output = sys.stdout.getvalue()
 sys.stdout = _stdout
 
 # Check output contains the number 351 (100.5 + 200.0 + 50.5)
